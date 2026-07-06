@@ -81,6 +81,15 @@ button:active { transform: scale(0.96); }
 #reader-display:fullscreen {
     width: 100vw; height: 100vh; max-width: none; border: none; border-radius: 0; background: #fff;
 }
+/* Pseudo-fullscreen fallback (iOS): manually cover the viewport since the
+   Fullscreen API / :fullscreen pseudo-class are unavailable for non-video. */
+#reader-display.pseudo-fullscreen {
+    position: fixed; inset: 0; z-index: 9999;
+    width: 100vw; height: 100vh; height: 100dvh; max-width: none;
+    border: none; border-radius: 0; background: #fff;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    box-sizing: border-box;
+}
 
 #reader-display::before, #reader-display::after {
     content: ''; position: absolute; width: 2px; height: 18px; background-color: #ddd;
@@ -88,8 +97,8 @@ button:active { transform: scale(0.96); }
 }
 #reader-display::before { top: 12px; }
 #reader-display::after { bottom: 12px; }
-#reader-display:fullscreen::before { top: 0; height: 30px; opacity: 0.5; }
-#reader-display:fullscreen::after { bottom: 0; height: 30px; opacity: 0.5; }
+#reader-display:fullscreen::before, #reader-display.pseudo-fullscreen::before { top: 0; height: 30px; opacity: 0.5; }
+#reader-display:fullscreen::after, #reader-display.pseudo-fullscreen::after { bottom: 0; height: 30px; opacity: 0.5; }
 
 .word-container {
     font-family: var(--font-family);
@@ -108,7 +117,7 @@ button:active { transform: scale(0.96); }
     -moz-osx-font-smoothing: grayscale;
 }
 
-#reader-display:fullscreen .word-container { font-size: clamp(2.5rem, 10vw, 5rem); }
+#reader-display:fullscreen .word-container, #reader-display.pseudo-fullscreen .word-container { font-size: clamp(2.5rem, 10vw, 5rem); }
 
 .part-left, .part-right, .pivot {
     font-weight: inherit !important; 
@@ -144,16 +153,19 @@ button:active { transform: scale(0.96); }
     font-weight: bold;
 }
 
-#reader-display:fullscreen .word-container.is-h1 { 
-    font-size: clamp(3rem, 11vw, 6rem); 
+#reader-display:fullscreen .word-container.is-h1,
+#reader-display.pseudo-fullscreen .word-container.is-h1 {
+    font-size: clamp(3rem, 11vw, 6rem);
 }
 
-#reader-display:fullscreen .word-container.is-h2 { 
-    font-size: clamp(2.8rem, 10vw, 5rem); 
+#reader-display:fullscreen .word-container.is-h2,
+#reader-display.pseudo-fullscreen .word-container.is-h2 {
+    font-size: clamp(2.8rem, 10vw, 5rem);
 }
 
-#reader-display:fullscreen .word-container.is-h3 { 
-    font-size: clamp(2.6rem, 9vw, 4rem); 
+#reader-display:fullscreen .word-container.is-h3,
+#reader-display.pseudo-fullscreen .word-container.is-h3 {
+    font-size: clamp(2.6rem, 9vw, 4rem);
 }
 
 #toast {

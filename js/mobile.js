@@ -435,23 +435,47 @@ function flashFeedback(side) {
     el.classList.add('active'); setTimeout(() => el.classList.remove('active'), 300);
 }
 
-function toggleFullscreen() {
-    if (!document.fullscreenElement) {
-        readerDisplay.requestFullscreen().catch(err => alert(err));
-        document.body.classList.add('fullscreen-active');
+// iOS Safari only grants real fullscreen to <video>, so requestFullscreen is
+// unavailable/rejected on iPhone. Fall back to a CSS-class pseudo-fullscreen there.
+const canNativeFS = !!readerDisplay.requestFullscreen;
+let isPseudoFullscreen = false;
+
+// Shared "entered/exited fullscreen" UI updates. The fullscreenchange event only
+// fires on the native path, so the pseudo path calls this directly.
+function applyFullscreenUI(active) {
+    document.body.classList.toggle('fullscreen-active', active);
+    if (active) {
         if (screen.orientation && screen.orientation.lock) {
             try { screen.orientation.lock('landscape'); } catch (e) { console.warn(e); }
         }
     } else {
-        if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
-        document.exitFullscreen();
-        document.body.classList.remove('fullscreen-active');
+        if (screen.orientation && screen.orientation.unlock) {
+            try { screen.orientation.unlock(); } catch (e) { /* no-op on iOS */ }
+        }
+    }
+    updateDisplays();
+}
+
+function toggleFullscreen() {
+    if (canNativeFS) {
+        if (!document.fullscreenElement) {
+            readerDisplay.requestFullscreen().catch(err => alert(err));
+            applyFullscreenUI(true);
+        } else {
+            document.exitFullscreen();
+            applyFullscreenUI(false);
+        }
+    } else {
+        // Pseudo-fullscreen fallback (iOS): drive the immersive layout with a class.
+        isPseudoFullscreen = !isPseudoFullscreen;
+        readerDisplay.classList.toggle('pseudo-fullscreen', isPseudoFullscreen);
+        applyFullscreenUI(isPseudoFullscreen);
+        if (isPseudoFullscreen) window.scrollTo(0, 1); // nudge the URL bar away
     }
 }
 document.addEventListener('fullscreenchange', () => {
     if (!document.fullscreenElement) {
-        document.body.classList.remove('fullscreen-active');
-        if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
+        applyFullscreenUI(false);
     }
 });
 
