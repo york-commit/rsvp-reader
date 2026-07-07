@@ -30,21 +30,23 @@ const StorageService = {
         return (await idbKeyval.get(this.KEY_LIB_INDEX)) || [];
     },
 
-    async addBook(fileBlob, title, author, initialProgress = null) {
+    async addBook(fileBlob, title, author, initialProgress = null, type = 'epub') {
         if (!window.idbKeyval) return null;
-        
+
         const library = (await idbKeyval.get(this.KEY_LIB_INDEX)) || [];
-        
+
         const bookId = crypto.randomUUID ? crypto.randomUUID() : 'book_' + Date.now();
-        
+
         const newBook = {
             id: bookId,
+            type: type,                 // 'epub' | 'text'
             title: title || "Unknown Title",
             author: author || "Unknown Author",
             addedAt: Date.now(),
             lastRead: Date.now(),
             chapterHref: initialProgress ? initialProgress.chapterHref : null,
-            wordIndex: initialProgress ? initialProgress.wordIndex : 0
+            wordIndex: initialProgress ? initialProgress.wordIndex : 0,
+            totalWords: initialProgress ? (initialProgress.totalWords || null) : null // for later %/time calc
         };
 
         await idbKeyval.set(this.PREFIX_BOOK + bookId, fileBlob);
@@ -53,6 +55,24 @@ const StorageService = {
         await idbKeyval.set(this.KEY_LIB_INDEX, library);
 
         return newBook;
+    },
+
+    // Store pasted text as a first-class library document (type: 'text').
+    async addTextDocument(text, title, totalWords) {
+        const blob = new Blob([text], { type: 'text/plain' });
+        return this.addBook(blob, title || "Pasted Text", "Text", { totalWords: totalWords || null }, 'text');
+    },
+
+    // Cache whole-book length + per-chapter word offsets (for progress % / time-left).
+    async saveBookMetrics(bookId, totalWords, chapterOffsets) {
+        if (!window.idbKeyval || !bookId) return;
+        const library = (await idbKeyval.get(this.KEY_LIB_INDEX)) || [];
+        const i = library.findIndex(b => b.id === bookId);
+        if (i !== -1) {
+            library[i].totalWords = totalWords;
+            library[i].chapterOffsets = chapterOffsets;
+            await idbKeyval.set(this.KEY_LIB_INDEX, library);
+        }
     },
 
     async loadBookFile(bookId) {

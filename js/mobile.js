@@ -27,8 +27,7 @@ const btnFsContext = document.getElementById('btnFsContext');
 const feedbackLeft = document.getElementById('feedbackLeft');
 const feedbackRight = document.getElementById('feedbackRight');
 
-const tabBtns = document.querySelectorAll('.tab-btn');
-const tabContents = document.querySelectorAll('.tab-content');
+// EPUB / reader controls
 const epubInput = document.getElementById('epubInput');
 const chapterSelect = document.getElementById('chapterSelect');
 const epubControls = document.getElementById('epub-controls');
@@ -37,15 +36,7 @@ const btnNextChapter = document.getElementById('btnNextChapter');
 const btnSyncPhrase = document.getElementById('btnSyncPhrase');
 const bookMetadata = document.getElementById('book-metadata');
 
-const resumeCard = document.getElementById('resume-card');
-const uploadCard = document.getElementById('upload-card');
-const resumeTitle = document.getElementById('resume-title');
-const resumeInfo = document.getElementById('resume-info');
-const btnResume = document.getElementById('btnResume');
-const btnDeleteBook = document.getElementById('btnDeleteBook');
-const btnOpenLibrary = document.getElementById('btnOpenLibrary');
-const btnUploadNew = document.getElementById('btnUploadNew');
-
+// Settings
 const btnSettings = document.getElementById('btnSettings');
 const settingsOverlay = document.getElementById('settings-overlay');
 const btnCloseSettings = document.getElementById('btnCloseSettings');
@@ -55,11 +46,29 @@ const weightSelect = document.getElementById('weightSelect');
 const themeSelect = document.getElementById('themeSelect');
 const btnFactoryReset = document.getElementById('btnFactoryReset');
 
-const libraryOverlay = document.getElementById('library-overlay');
-const btnCloseLibrary = document.getElementById('btnCloseLibrary');
-const libraryList = document.getElementById('library-list');
-const btnUploadFromLib = document.getElementById('btnUploadFromLib');
-const btnLibraryFromControls = document.getElementById('btnLibraryFromControls');
+// Views + bottom nav
+const viewLibrary = document.getElementById('view-library');
+const viewReader = document.getElementById('view-reader');
+const navLibrary = document.getElementById('nav-library');
+const navReader = document.getElementById('nav-reader');
+const btnSettingsTop = document.getElementById('btnSettingsTop');
+
+// Library UI
+const btnAddLocal = document.getElementById('btnAddLocal');
+const libraryHeroSection = document.getElementById('library-hero-section');
+const libraryHero = document.getElementById('library-hero');
+const libraryGrid = document.getElementById('library-grid');
+const btnGridView = document.getElementById('btnGridView');
+const btnListView = document.getElementById('btnListView');
+
+// Add modal
+const addModal = document.getElementById('add-modal');
+const btnCloseAdd = document.getElementById('btnCloseAdd');
+const btnAddUpload = document.getElementById('btnAddUpload');
+const btnAddPasteToggle = document.getElementById('btnAddPasteToggle');
+const pastePanel = document.getElementById('paste-panel');
+const pasteTitle = document.getElementById('pasteTitle');
+const btnConfirmPaste = document.getElementById('btnConfirmPaste');
 
 const fontConfig = {
     'classic': { family: "'Courier New', Courier, monospace", weights: [400, 700] },
@@ -145,106 +154,259 @@ window.addEventListener('DOMContentLoaded', async () => {
     updateDisplays();
     applySettings(settings);
     ReaderEngine.updateProgress();
-    
-    await checkLastReadBook();
+
+    await renderLibrary();   // Library is the default landing view
 });
 
-async function checkLastReadBook() {
-    const book = await StorageService.getLastReadBook();
-    if (book) {
-        currentBookId = book.id;
-        currentBookTitle = book.title;
-        currentBookAuthor = book.author;
-        resumeCard.style.display = 'block';
-        uploadCard.style.display = 'none';
-        resumeTitle.textContent = book.title;
-        resumeInfo.textContent = "Progress saved"; 
-    } else {
-        resumeCard.style.display = 'none';
-        uploadCard.style.display = 'block';
+/* ---------------- View navigation ---------------- */
+async function showView(name) {
+    const isLib = (name === 'library');
+    viewLibrary.classList.toggle('active', isLib);
+    viewReader.classList.toggle('active', !isLib);
+    navLibrary.classList.toggle('active', isLib);
+    navReader.classList.toggle('active', !isLib);
+    if (isLib) {
+        ReaderEngine.pause();        // pause if reading (harmless if already paused)
+        await persistProgress();     // save latest position BEFORE rendering the library
+        renderLibrary();
+        window.scrollTo(0, 0);
     }
 }
+navLibrary.addEventListener('click', () => showView('library'));
+navReader.addEventListener('click', () => showView('reader'));
 
-async function renderLibraryList() {
-    const books = await StorageService.getLibrary();
-    libraryList.innerHTML = "";
-    if (books.length === 0) {
-        libraryList.innerHTML = '<div class="empty-lib-msg">No books yet. Upload one!</div>';
-        return;
+/* ---------------- Library rendering ---------------- */
+function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function coverIcon(book) { return book.type === 'text' ? 'article' : 'book_2'; }
+function statusLabel(book) { return (!book.wordIndex || book.wordIndex === 0) ? 'New' : 'Reading'; }
+function lastReadText(book) {
+    try { return 'Last read ' + new Date(book.lastRead).toLocaleDateString(); } catch (e) { return ''; }
+}
+// Global word position within the whole book: text docs use wordIndex directly;
+// epubs add the cumulative words before the current chapter (from cached offsets).
+function globalWordPos(book) {
+    const idx = book.wordIndex || 0;
+    if (book.type === 'text') return idx;
+    const offsets = book.chapterOffsets;
+    if (offsets && book.chapterHref != null && offsets[book.chapterHref] != null) {
+        return offsets[book.chapterHref] + idx;
     }
-    books.forEach(book => {
-        const item = document.createElement('div');
-        item.className = 'library-item';
-        const date = new Date(book.lastRead).toLocaleDateString();
-        item.innerHTML = `
-            <div class="lib-info">
-                <h4 class="lib-title">${book.title}</h4>
-                <p class="lib-author">${book.author}</p>
-                <div class="lib-meta">Last read: ${date}</div>
+    return idx; // metrics not computed yet
+}
+function computeProgress(book) {
+    const total = book.totalWords;
+    if (!total || total <= 0) return null;
+    return Math.max(0, Math.min(100, Math.round((globalWordPos(book) / total) * 100)));
+}
+// Minutes to finish the whole book at the given WPM (~1.3x fudge for punctuation
+// pauses, matching the engine's own time estimate). Returns a formatted string.
+function estimateTimeLeft(book, wpm) {
+    const total = book.totalWords;
+    if (!total || total <= 0 || !wpm) return null;
+    const remaining = Math.max(0, total - globalWordPos(book));
+    if (remaining === 0) return 'Finished';
+    const minutes = (remaining * 1.3) / wpm;
+    if (minutes < 1) return '< 1 min left';
+    if (minutes < 60) return `${Math.round(minutes)} min left`;
+    const h = Math.floor(minutes / 60), m = Math.round(minutes % 60);
+    return `${h}h ${m}m left`;
+}
+
+function buildHeroHTML(book) {
+    const pct = computeProgress(book);
+    const time = estimateTimeLeft(book, currentWpm);
+    const status = statusLabel(book);
+    const done = pct === 100;
+    const metaRight = (pct != null && time && !done)
+        ? `${time} at ${currentWpm} WPM`
+        : (done ? 'Finished' : lastReadText(book));
+    return `
+        <div class="lib-hero-card">
+            <div class="lib-hero-cover"><span class="material-symbols-outlined">${coverIcon(book)}</span></div>
+            <div class="lib-hero-body">
+                <span class="lib-chip">${status === 'New' ? 'Not started' : 'Currently reading'}</span>
+                <h3 class="lib-hero-title">${escapeHtml(book.title)}</h3>
+                <p class="lib-hero-meta">${escapeHtml(book.author || (book.type === 'text' ? 'Text' : ''))}</p>
+                <div class="lib-progress-row">
+                    <span class="lib-progress-pct">${pct != null ? pct + '%' : status}</span>
+                    <span class="lib-progress-meta">${escapeHtml(metaRight)}</span>
+                </div>
+                <div class="lib-progress-track"><div class="lib-progress-fill${done ? ' done' : ''}" style="width:${pct != null ? pct : 0}%"></div></div>
             </div>
-            <div class="lib-actions">
-                <button class="btn-lib-open" data-id="${book.id}">Open</button>
-                <button class="btn-lib-del" data-id="${book.id}">🗑</button>
+            <button class="lib-hero-play" aria-label="Continue"><span class="material-symbols-outlined">play_arrow</span></button>
+        </div>`;
+}
+function buildCardHTML(book) {
+    const pct = computeProgress(book);
+    const time = estimateTimeLeft(book, currentWpm);
+    const status = statusLabel(book);
+    const done = pct === 100;
+    const sub = book.type === 'text' ? 'Text' : (book.author || 'eBook');
+    const foot = (pct != null) ? (pct + '%' + (time && !done ? ' · ' + time : '')) : status;
+    return `
+        <div class="lib-card" data-id="${escapeHtml(book.id)}">
+            <div class="lib-card-cover">
+                <div class="cover-tint"></div>
+                <span class="material-symbols-outlined cover-icon">${coverIcon(book)}</span>
+                <button class="lib-card-menu" aria-label="Delete document"><span class="material-symbols-outlined">more_vert</span></button>
             </div>
-        `;
-        libraryList.appendChild(item);
+            <div class="lib-card-body">
+                <h4 class="lib-card-title">${escapeHtml(book.title)}</h4>
+                <p class="lib-card-sub">${escapeHtml(sub)}</p>
+                <div class="lib-card-foot">
+                    <div class="lib-progress-track"><div class="lib-progress-fill${done ? ' done' : ''}" style="width:${pct != null ? pct : 0}%"></div></div>
+                    <p class="lib-progress-meta" style="margin:6px 0 0;">${escapeHtml(foot)}</p>
+                </div>
+            </div>
+        </div>`;
+}
+function buildAddTileHTML() {
+    return `
+        <button class="lib-add-tile">
+            <span class="add-badge"><span class="material-symbols-outlined">add</span></span>
+            <strong>Add Document</strong>
+            <small>EPUB or Text</small>
+        </button>`;
+}
+
+async function renderLibrary() {
+    const books = await StorageService.getLibrary();
+
+    if (books.length > 0) {
+        libraryHeroSection.style.display = 'block';
+        libraryHero.innerHTML = buildHeroHTML(books[0]);
+        libraryHero.querySelector('.lib-hero-card').addEventListener('click', () => openDocument(books[0]));
+    } else {
+        libraryHeroSection.style.display = 'none';
+        libraryHero.innerHTML = '';
+    }
+
+    const rest = books.slice(1);
+    libraryGrid.innerHTML = rest.map(buildCardHTML).join('') + buildAddTileHTML();
+
+    libraryGrid.querySelectorAll('.lib-card').forEach(el => {
+        const book = books.find(b => b.id === el.dataset.id);
+        if (!book) return;
+        el.addEventListener('click', (e) => {
+            if (e.target.closest('.lib-card-menu')) return;
+            openDocument(book);
+        });
+        const menu = el.querySelector('.lib-card-menu');
+        if (menu) menu.addEventListener('click', (e) => { e.stopPropagation(); deleteBookFromLibrary(book.id); });
     });
-    libraryList.querySelectorAll('.btn-lib-open').forEach(btn => btn.onclick = () => loadBookFromLibrary(btn.dataset.id));
-    libraryList.querySelectorAll('.btn-lib-del').forEach(btn => btn.onclick = () => deleteBookFromLibrary(btn.dataset.id));
+    const addTile = libraryGrid.querySelector('.lib-add-tile');
+    if (addTile) addTile.addEventListener('click', openAddModal);
+}
+
+/* ---------------- Opening documents ---------------- */
+function openDocument(book) {
+    closeAddModal();
+    if (book.type === 'text') openTextDocument(book);
+    else loadBookFromLibrary(book.id);
 }
 
 async function loadBookFromLibrary(bookId) {
-    libraryOverlay.classList.remove('active');
     const fileBlob = await StorageService.loadBookFile(bookId);
     if (fileBlob) {
         currentBookId = bookId;
+        currentMode = 'epub';
         showToast("Loading book...", toast);
-        EpubBridge.loadBook(fileBlob);
+        EpubBridge.loadBook(fileBlob);   // epubChaptersLoaded → switches to Reader view
     } else {
         alert("Error loading book data.");
     }
 }
 
+async function openTextDocument(book) {
+    const blob = await StorageService.loadBookFile(book.id);
+    if (!blob) { alert("Error loading document."); return; }
+    const text = await blob.text();
+    currentBookId = book.id;
+    currentMode = 'text';
+    currentBookTitle = book.title;
+    bookMetadata.textContent = book.title;
+    bookMetadata.style.display = 'block';
+    epubControls.style.display = 'none';
+    const words = parseContent(text);
+    const startIndex = (book.wordIndex > 0) ? Math.min(words.length - 1, book.wordIndex) : 0;
+    ReaderEngine.loadContent(words, startIndex);
+    renderWord(words.length > 0 ? words[startIndex] : "Empty", wordOutput);
+    showView('reader');
+    refreshPeek();
+}
+
 async function deleteBookFromLibrary(bookId) {
-    if(confirm("Delete this book?")) {
+    if (confirm("Delete this document?")) {
         await StorageService.deleteBook(bookId);
-        await renderLibraryList();
         if (currentBookId === bookId) {
             currentBookId = null;
-            checkLastReadBook();
             ReaderEngine.reset();
             ReaderEngine.loadContent([]);
             renderWord("Ready", wordOutput);
             bookMetadata.style.display = 'none';
             epubControls.style.display = 'none';
         }
+        await renderLibrary();
     }
 }
 
-btnResume.addEventListener('click', async () => { if (currentBookId) loadBookFromLibrary(currentBookId); });
-btnOpenLibrary.addEventListener('click', () => { renderLibraryList(); libraryOverlay.classList.add('active'); });
-if (btnLibraryFromControls) {
-    btnLibraryFromControls.addEventListener('click', () => {
-        ReaderEngine.pause();
-        renderLibraryList();
-        libraryOverlay.classList.add('active');
-    });
+/* ---------------- Add modal ---------------- */
+function openAddModal() { if (pastePanel) pastePanel.style.display = 'none'; addModal.classList.add('active'); }
+function closeAddModal() { addModal.classList.remove('active'); }
+
+btnAddLocal.addEventListener('click', openAddModal);
+btnCloseAdd.addEventListener('click', closeAddModal);
+addModal.addEventListener('click', (e) => { if (e.target === addModal) closeAddModal(); });
+btnAddUpload.addEventListener('click', () => epubInput.click());
+btnAddPasteToggle.addEventListener('click', () => {
+    const showing = pastePanel.style.display === 'flex';
+    pastePanel.style.display = showing ? 'none' : 'flex';
+    if (!showing) inputText.focus();
+});
+btnConfirmPaste.addEventListener('click', handlePasteConfirm);
+
+async function handlePasteConfirm() {
+    const text = inputText.value.trim();
+    if (!text) { alert('Please paste some text first.'); return; }
+    const title = pasteTitle.value.trim() || ('Text — ' + new Date().toLocaleDateString());
+    const book = await StorageService.addTextDocument(text, title, parseContent(text).length);
+    inputText.value = '';
+    pasteTitle.value = '';
+    closeAddModal();
+    if (book) {
+        await openTextDocument(book);
+    } else {
+        // Storage unavailable — read without saving.
+        currentMode = 'text';
+        const words = parseContent(text);
+        ReaderEngine.loadContent(words);
+        renderWord(words.length ? words[0] : "Empty", wordOutput);
+        showView('reader');
+        refreshPeek();
+    }
 }
-btnUploadNew.addEventListener('click', () => { resumeCard.style.display = 'none'; uploadCard.style.display = 'block'; });
-btnCloseLibrary.addEventListener('click', () => libraryOverlay.classList.remove('active'));
-btnUploadFromLib.addEventListener('click', () => {
-    libraryOverlay.classList.remove('active');
-    resumeCard.style.display = 'none';
-    uploadCard.style.display = 'block';
-    document.querySelector('.tab-btn[data-target="epub"]').click();
+
+/* ---------------- Grid / list toggle ---------------- */
+btnGridView.addEventListener('click', () => {
+    libraryGrid.classList.remove('list-view');
+    btnGridView.classList.add('active');
+    btnListView.classList.remove('active');
+});
+btnListView.addEventListener('click', () => {
+    libraryGrid.classList.add('list-view');
+    btnListView.classList.add('active');
+    btnGridView.classList.remove('active');
 });
 
-if(btnSettings) {
-    btnSettings.addEventListener('click', () => {
-        settingsOverlay.classList.add('active');
-        if(ReaderEngine.isPlaying) ReaderEngine.pause();
-    });
+function openSettings() {
+    settingsOverlay.classList.add('active');
+    if (ReaderEngine.isPlaying) ReaderEngine.pause();
 }
+if (btnSettings) btnSettings.addEventListener('click', openSettings);
+if (btnSettingsTop) btnSettingsTop.addEventListener('click', openSettings);
 function closeSettings() { settingsOverlay.classList.remove('active'); }
 if(btnCloseSettings) btnCloseSettings.addEventListener('click', closeSettings);
 if(btnSaveSettings) btnSaveSettings.addEventListener('click', closeSettings);
@@ -296,6 +458,8 @@ settingsOverlay.addEventListener('click', (e) => { if (e.target === settingsOver
 epubInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (file) {
+        closeAddModal();
+        currentMode = 'epub';
         showToast("Processing...", toast);
         const reader = new FileReader();
         reader.onload = (e) => EpubBridge.loadBook(e.target.result);
@@ -314,6 +478,7 @@ EpubBridge.onMetadataReady = async (title, author) => {
         currentBookId = newBook.id;
         window.tempUploadFile = null;
         showToast("Saved to Library", toast);
+        renderLibrary();
     }
 };
 
@@ -331,15 +496,32 @@ document.addEventListener('epubChaptersLoaded', (e) => {
         if (book && book.chapterHref) {
             chapterSelect.value = book.chapterHref;
             EpubBridge.loadChapter(book.chapterHref);
-            window.tempWordIndex = book.wordIndex; 
+            window.tempWordIndex = book.wordIndex;
         } else {
             if(chapters.length > 0) EpubBridge.loadChapter(chapters[0].href);
         }
+        // Compute whole-book length once (background) so the library can show
+        // accurate progress % and time-left.
+        if (book && !book.totalWords) ensureBookMetrics(currentBookId);
     });
-    resumeCard.style.display = 'none';
-    uploadCard.style.display = 'none';
     epubControls.style.display = 'flex';
+    showView('reader');
 });
+
+// One-time, background whole-book word count. Delayed so the current chapter
+// renders first; result cached on the library entry.
+let metricsInFlight = null;
+function ensureBookMetrics(bookId) {
+    if (metricsInFlight === bookId) return;
+    metricsInFlight = bookId;
+    setTimeout(async () => {
+        try {
+            const m = await EpubBridge.computeBookMetrics();
+            if (m && m.totalWords > 0) await StorageService.saveBookMetrics(bookId, m.totalWords, m.chapterOffsets);
+        } catch (e) { console.warn('Book metrics failed:', e); }
+        finally { if (metricsInFlight === bookId) metricsInFlight = null; }
+    }, 1500);
+}
 
 chapterSelect.addEventListener('change', (e) => {
     ReaderEngine.pause();
@@ -365,11 +547,21 @@ EpubBridge.onChapterReady = (htmlContent) => {
     refreshPeek(); // show context around the resumed position (reader is paused)
 };
 
-function saveCurrentState() {
-    if (currentMode === 'epub' && currentBookId && EpubBridge.book) {
-        const href = chapterSelect.value;
-        StorageService.saveProgress(currentBookId, href, ReaderEngine.currentIndex);
+// Persist the current reading position for the open document (epub OR text).
+// Returns a promise so callers (e.g. leaving the reader) can await the write.
+function persistProgress() {
+    if (!currentBookId) return Promise.resolve();
+    if (currentMode === 'epub' && EpubBridge.book) {
+        return StorageService.saveProgress(currentBookId, chapterSelect.value, ReaderEngine.currentIndex);
     }
+    if (currentMode === 'text') {
+        return StorageService.saveProgress(currentBookId, null, ReaderEngine.currentIndex);
+    }
+    return Promise.resolve();
+}
+
+function saveCurrentState() {
+    persistProgress();
     const currentFont = fontSelect ? fontSelect.value : 'classic';
     const currentWeight = weightSelect ? weightSelect.value : '400';
     const currentTheme = themeSelect ? themeSelect.value : 'light';
@@ -428,21 +620,6 @@ function renderPeek(show) {
 function refreshPeek() {
     renderPeek(!ReaderEngine.isPlaying && ReaderEngine.words.length > 0);
 }
-
-tabBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-        tabBtns.forEach(b => b.classList.remove('active'));
-        tabContents.forEach(c => c.classList.remove('active'));
-        btn.classList.add('active');
-        document.getElementById(`tab-content-${btn.dataset.target}`).classList.add('active');
-        currentMode = btn.dataset.target;
-        ReaderEngine.reset();
-        if(currentMode === 'text') {
-            ReaderEngine.loadContent([]);
-            renderWord("Ready", wordOutput);
-        }
-    });
-});
 
 btnPrevChapter.addEventListener('click', () => {
     const prev = EpubBridge.getPreviousChapter();

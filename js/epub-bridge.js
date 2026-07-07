@@ -128,6 +128,36 @@ const EpubBridge = {
         }
     },
 
+    // Walk every chapter once to get the whole-book word count (parsed the same
+    // way the reader parses a chapter) plus the cumulative word offset before each
+    // chapter, so the library can compute global progress / time-left. Sequential
+    // + unload to keep memory low. Returns { totalWords, chapterOffsets }.
+    computeBookMetrics: async function() {
+        if (!this.book || !this.chapters.length) return null;
+        const chapterOffsets = {};
+        let total = 0;
+
+        for (const group of this.chapters) {
+            chapterOffsets[group.href] = total;   // words before this chapter
+            let html = "";
+            for (const href of group.spineHrefs) {
+                try {
+                    const cleanHref = href.split('#')[0];
+                    const item = this.book.spine.get(cleanHref);
+                    if (!item) continue;
+                    const doc = await item.load(this.book.load.bind(this.book));
+                    const body = doc.querySelector ? doc.querySelector('body') : null;
+                    const serializer = new XMLSerializer();
+                    html += " " + serializer.serializeToString(body || doc.documentElement || doc);
+                    if (item.unload) item.unload();
+                } catch (e) { /* skip unreadable spine item */ }
+            }
+            const words = (typeof parseHTMLToRSVP === 'function') ? parseHTMLToRSVP(html) : [];
+            total += words.length;
+        }
+        return { totalWords: total, chapterOffsets: chapterOffsets };
+    },
+
     findPhraseIndex: function(wordsArray, phrase) {
         if (!phrase || phrase.trim().length === 0) return -1;
         
