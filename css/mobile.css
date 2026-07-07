@@ -50,6 +50,32 @@ button.wpm-btn { background-color: #ddd; color: #333; font-size: 1.2rem; max-wid
 .tap-feedback.right { right: 0; background: linear-gradient(to left, rgba(0,0,0,0.05), transparent); }
 .tap-feedback.active { opacity: 1; }
 
+/* Context Peek: surrounding words shown while paused (normal + fullscreen) */
+#context-peek {
+    position: absolute; left: 0; right: 0; bottom: 10px;
+    display: none; flex-wrap: nowrap; align-items: baseline; justify-content: center;
+    gap: 0.45em; padding: 0 14px; z-index: 3; pointer-events: none;
+    font-family: var(--font-family); font-size: 0.9rem; line-height: 1;
+    white-space: nowrap; overflow: hidden;
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+            mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+}
+#context-peek.visible { display: flex; }
+.peek-word { color: var(--text-color); opacity: 0.4; }
+.peek-current { opacity: 1; color: var(--accent-color); font-weight: 700; }
+.peek-break { color: var(--text-color); opacity: 0.3; }
+
+#reader-display:fullscreen #context-peek,
+#reader-display.pseudo-fullscreen #context-peek {
+    bottom: 84px; font-size: 1.3rem; gap: 0.6em;
+}
+
+/* While paused the peek fills the bottom strip, so lift the progress %
+   above it. Only applies when #context-peek is .visible (i.e. paused). */
+#context-peek.visible ~ #progress-indicator {
+    transform: translateY(-26px);
+}
+
 /* HUD Minimalista */
 #mobile-fs-toolbar {
     position: fixed; bottom: 20px; right: 20px; left: auto; width: auto;

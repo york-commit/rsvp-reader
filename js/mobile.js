@@ -18,6 +18,7 @@ const btnContext = document.getElementById('btnContext');
 const readerDisplay = document.getElementById('reader-display');
 const toast = document.getElementById('toast');
 const contextOverlay = document.getElementById('context-overlay');
+const contextPeek = document.getElementById('context-peek');
 const progressIndicator = document.getElementById('progress-indicator');
 const wpmDisplay = document.getElementById('wpmDisplay');
 const fsWpmDisplay = document.getElementById('fsWpmDisplay');
@@ -76,7 +77,14 @@ ReaderEngine.init({
     renderProgress: (text) => { if (progressIndicator) progressIndicator.textContent = text; },
     onStateChange: (playing) => {
         btnToggle.textContent = playing ? "Pause" : "Start";
-        if (playing) saveCurrentState();
+        saveCurrentState();          // persist on BOTH play and pause
+        if (playing) {
+            renderPeek(false);       // hide the peek while reading
+            startAutosave();         // keep saving mid-read (iOS may kill us anytime)
+        } else {
+            stopAutosave();
+            refreshPeek();           // show surrounding words when paused
+        }
     },
     onFinish: () => saveCurrentState()
 });
@@ -353,6 +361,8 @@ EpubBridge.onChapterReady = (htmlContent) => {
     
     if (words.length > 0) renderWord(words[startIndex], wordOutput);
     else renderWord("Empty", wordOutput);
+
+    refreshPeek(); // show context around the resumed position (reader is paused)
 };
 
 function saveCurrentState() {
@@ -366,7 +376,58 @@ function saveCurrentState() {
     StorageService.saveSettings(currentWpm, currentMode, currentFont, currentWeight, currentTheme, ReaderEngine.progressMode);
 }
 
+// Autosave while reading so a background/kill (common on iOS) never loses much.
+let autosaveTimer = null;
+function startAutosave() {
+    stopAutosave();
+    autosaveTimer = setInterval(saveCurrentState, 2000);
+}
+function stopAutosave() {
+    if (autosaveTimer) { clearInterval(autosaveTimer); autosaveTimer = null; }
+}
+
+// iOS Safari fires visibilitychange/pagehide reliably (beforeunload often not),
+// so persist the moment the app is backgrounded or closed.
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveCurrentState(); });
+window.addEventListener('pagehide', () => { if (!isResetting) saveCurrentState(); });
 window.addEventListener('beforeunload', () => { if (!isResetting) saveCurrentState(); });
+
+// Peek: show a few words before/after the current one while paused.
+const PEEK_RADIUS = 4;
+function renderPeek(show) {
+    if (!contextPeek) return;
+    const words = ReaderEngine.words;
+    if (!show || !words || words.length === 0) {
+        contextPeek.classList.remove('visible');
+        contextPeek.innerHTML = '';
+        return;
+    }
+    // Match the context-overlay convention: the displayed word is currentIndex-1
+    // once reading has advanced past the start.
+    let cur = ReaderEngine.currentIndex > 0 ? ReaderEngine.currentIndex - 1 : 0;
+    cur = Math.max(0, Math.min(words.length - 1, cur));
+
+    const frag = document.createDocumentFragment();
+    for (let i = cur - PEEK_RADIUS; i <= cur + PEEK_RADIUS; i++) {
+        if (i < 0 || i >= words.length) continue;
+        const w = words[i];
+        const span = document.createElement('span');
+        if (w.type === 'break') {
+            span.className = 'peek-break';
+            span.textContent = '¶';
+        } else {
+            span.className = (i === cur) ? 'peek-word peek-current' : 'peek-word';
+            span.textContent = w.text;
+        }
+        frag.appendChild(span);
+    }
+    contextPeek.innerHTML = '';
+    contextPeek.appendChild(frag);
+    contextPeek.classList.add('visible');
+}
+function refreshPeek() {
+    renderPeek(!ReaderEngine.isPlaying && ReaderEngine.words.length > 0);
+}
 
 tabBtns.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -472,6 +533,7 @@ function toggleFullscreen() {
         applyFullscreenUI(isPseudoFullscreen);
         if (isPseudoFullscreen) window.scrollTo(0, 1); // nudge the URL bar away
     }
+    saveCurrentState(); // persist position whenever entering/leaving fullscreen
 }
 document.addEventListener('fullscreenchange', () => {
     if (!document.fullscreenElement) {
@@ -529,13 +591,15 @@ readerDisplay.addEventListener('touchend', (e) => {
             showToast(`⏩ +${jump}`, toast);
             flashFeedback('right');
         }
+        refreshPeek(); // update surrounding-words preview after a skip
     } else if (tapCount === 3) {
-        if (zone === 'left') { 
+        if (zone === 'left') {
             ReaderEngine.skipParagraph('prev');
             showToast("⏮ Paragraph Start", toast);
             flashFeedback('left');
         }
-        tapCount = 0; 
+        refreshPeek();
+        tapCount = 0;
     }
     e.preventDefault();
 });
@@ -552,6 +616,7 @@ btnReset.addEventListener('click', () => {
         ReaderEngine.loadContent([]);
         renderWord("Ready", wordOutput);
     }
+    refreshPeek();
 });
 
 btnContext.addEventListener('click', toggleContextView);
@@ -607,5 +672,9 @@ function toggleContextView() {
             }
         });
         contextOverlay.classList.add('active');
-    } else { contextOverlay.classList.remove('active'); }
+        renderPeek(false); // full-text overlay is open; hide the inline peek
+    } else {
+        contextOverlay.classList.remove('active');
+        refreshPeek();
+    }
 }
